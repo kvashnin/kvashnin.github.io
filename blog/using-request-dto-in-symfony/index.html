@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<html>
+    <head>
+        <title>Using Request DTO in Symfony &mdash; Serge Kvashnin &mdash; Development Notes And Ideas</title>
+        <meta charset="utf-8">
+        <meta name="theme-color" content="#ffffff">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <meta name="robots" content="index, follow">
+        <link href="/components/bootstrap/css/bootstrap.min.css" rel="stylesheet" type="text/css" />
+        <link href="/css/style.css" rel="stylesheet" type="text/css" />
+        <!-- HTML5 shim, for IE6-8 support of HTML5 elements -->
+        <!--[if lt IE 9]>
+            <script src="http://html5shim.googlecode.com/svn/trunk/html5.js"></script>
+        <![endif]-->
+
+        <link rel="apple-touch-icon" sizes="57x57" href="/images/logo/apple-icon-57x57.png">
+        <link rel="apple-touch-icon" sizes="60x60" href="/images/logo/apple-icon-60x60.png">
+        <link rel="apple-touch-icon" sizes="72x72" href="/images/logo/apple-icon-72x72.png">
+        <link rel="apple-touch-icon" sizes="76x76" href="/images/logo/apple-icon-76x76.png">
+        <link rel="apple-touch-icon" sizes="114x114" href="/images/logo/apple-icon-114x114.png">
+        <link rel="apple-touch-icon" sizes="120x120" href="/images/logo/apple-icon-120x120.png">
+        <link rel="apple-touch-icon" sizes="144x144" href="/images/logo/apple-icon-144x144.png">
+        <link rel="apple-touch-icon" sizes="152x152" href="/images/logo/apple-icon-152x152.png">
+        <link rel="apple-touch-icon" sizes="180x180" href="/images/logo/apple-icon-180x180.png">
+        <link rel="icon" type="image/png" sizes="192x192"  href="/images/logo/android-icon-192x192.png">
+        <link rel="icon" type="image/png" sizes="32x32" href="/images/logo/favicon-32x32.png">
+        <link rel="icon" type="image/png" sizes="96x96" href="/images/logo/favicon-96x96.png">
+        <link rel="icon" type="image/png" sizes="16x16" href="/images/logo/favicon-16x16.png">
+        <link rel="manifest" href="/manifest.json">
+        <meta name="msapplication-TileColor" content="#ffffff">
+        <meta name="msapplication-TileImage" content="/images/logo/ms-icon-144x144.png">
+
+        <link rel="stylesheet" href="/components/highlightjs/styles/github.css" />
+        <link rel="alternate" type="application/atom+xml" href="/atom.xml" title="Serge Kvashnin activity feed" />
+        <style>
+        /** quick fix because bootstrap <pre> has a background-color. */
+        pre code { background-color: inherit; }
+        </style>
+                                    </head>
+    <body>
+        <header>
+            <nav class="navbar navbar-inverse navbar-fixed-top">
+                <div class="container">
+                    <div class="navbar-header">
+                        <button type="button" class="navbar-toggle collapsed" data-toggle="collapse" data-target="#navbar" aria-expanded="false" aria-controls="navbar">
+                            <span class="sr-only">Toggle navigation</span>
+                            <span class="icon-bar"></span>
+                            <span class="icon-bar"></span>
+                            <span class="icon-bar"></span>
+                        </button>
+                        <a class="navbar-brand" href="/">
+                            kvashn.in
+                        </a>
+                    </div>
+                    <div id="navbar" class="collapse navbar-collapse">
+                        <ul class="nav navbar-nav">
+                            <li><a href="/blog">Archive</a></li>
+                            <li><a href="/about">About</a></li>
+                        </ul>
+                    </div>
+                </div>
+            </nav>
+        </header>
+        <div class="mainContent container">
+            <div class="row-fluid">
+                <div class="span8">
+                        <article>
+        <header>
+            <h1>Using Request DTO in Symfony</h1>
+        </header>
+        <div>
+            <blockquote>
+  <p><strong>TL;DR</strong></p>
+  
+  <p>Instead of creating form, handling request and checking form validity inside each controller action you can use request data transfer objects with validation constraints.</p>
+  
+  <p><strong><em>NOTICE:</em></strong></p>
+  
+  <p><em>This article is written for Symfony 4.0 and PHP 7.1. Performing some adjustments you can easily make it work in earlier versions of PHP. You can also use <a href="https://symfony.com/doc/3.4/controller/argument_value_resolver.html">Symfony 3.4 documentation</a> to adjust this example.</em></p>
+</blockquote>
+
+<p>Compare these two code snippets from imaginary controller that handles user's e-mail update.</p>
+
+<pre><code class="php">class EmailController
+{
+    public function updateEmail(Request $request)
+    {
+        $form = $this-&gt;createForm(EmailUpdateType::class);
+        $form-&gt;handleRequest($request);
+
+        if ($form-&gt;isSubmitted() &amp;&amp; $form-&gt;isValid()) {
+            // here you have to update an e-mail...
+        }
+
+        // here you have to return response with errors if something went wrong...
+    }
+}
+</code></pre>
+
+<p>vs.</p>
+
+<pre><code class="php">class EmailController
+{
+    public function updateEmail(UpdateEmailRequest $request)
+    {
+        $email = $request-&gt;email();
+
+        // here you have to update an e-mail...
+    }
+}
+</code></pre>
+
+<p>Second snippet is free from unneeded code duplication. Also it's less verbose. You are immediately ready to use valid data. Symfony is pretty flexible and you don't have to use form component for API requests handling, if you don't want to.</p>
+
+<p>Let's see how this can be achieved.</p>
+
+<blockquote>
+  <p><strong><em>NOTICE:</em></strong></p>
+  
+  <p><em>You may still want to use Symfony form component as shown in the first code snippet, in case you're generating the template with form on the backend (old school approach). Then you can take an advantage of Twig helpers that make form rendering much simpler (see <a href="https://symfony.com/doc/current/forms.html#rendering-the-form">Symfony doc's</a>).</em></p>
+</blockquote>
+
+<h2 id="extending-controller-action-argument-resolving">Extending Controller Action Argument Resolving</h2>
+
+<p>Symfony ships with <a href="https://symfony.com/doc/current/controller/argument_value_resolver.html#functionality-shipped-with-the-httpkernel">five value resolvers</a> in the HttpKernel component "out of the box". To achieve our goal we have to add a <a href="https://symfony.com/doc/current/controller/argument_value_resolver.html#adding-a-custom-value-resolver">custom value resolver</a>. It should implement <a href="http://api.symfony.com/4.0/Symfony/Component/HttpKernel/Controller/ArgumentValueResolverInterface.html"><code>ArgumentValueResolverInterface</code></a> with two methods: <code>supports()</code> and <code>resolve()</code>.</p>
+
+<pre><code class="php">// ...
+
+use Symfony\Component\HttpFoundation\Request;
+use Symfony\Component\HttpKernel\Controller\ArgumentValueResolverInterface;
+use Symfony\Component\HttpKernel\ControllerMetadata\ArgumentMetadata;
+use Symfony\Component\HttpKernel\Exception\BadRequestHttpException;
+use Symfony\Component\Validator\Validator\ValidatorInterface;
+
+class RequestDTOResolver implements ArgumentValueResolverInterface
+{
+    private $validator;
+
+    public function __construct(ValidatorInterface $validator)
+    {
+        $this-&gt;validator = $validator;
+    }
+
+    public function supports(Request $request, ArgumentMetadata $argument)
+    {
+        // TODO: Implement
+    }
+
+    public function resolve(Request $request, ArgumentMetadata $argument)
+    {
+        // creating new instance of custom request DTO
+        $class = $argument-&gt;getType();
+        $dto = new $class($request);
+
+        // throw bad request exception in case of invalid request data
+        $errors = $this-&gt;validator-&gt;validate($dto);
+        if (count($errors) &gt; 0) {
+            throw new BadRequestHttpException((string) $errors);
+        }
+
+        yield $dto;
+    }
+}
+</code></pre>
+
+<p>We will implement <code>supports()</code> method a bit later. For now let's take a closer at <code>resolve()</code> method.</p>
+
+<p>It receives the <code>Request</code> object, which is the current request, and an <a href="http://api.symfony.com/4.0/Symfony/Component/HttpKernel/ControllerMetadata/ArgumentMetadata.html"><code>ArgumentMetadata</code></a> object that contains needed information for the current argument.</p>
+
+<p>As you can see, we're using argument class (which should be a request DTO) to create an actual instance, passing the request object to allow DTO to be constructed with needed data (later you will see an example of DTO implementation). If data is invalid we throw bad request exception, otherwise we <a href="http://php.net/manual/en/language.generators.syntax.php">yield</a> this data to the <code>ArgumentResolver</code>.</p>
+
+<p>Now we have to ensure that our DTO resolver will handle DTO request arguments only. Also we want to be confident, that DTO requests have a constructor which receives the request and extracts data from it.</p>
+
+<p>It's time to create an interface for our DTO request classes and to implement <code>supports()</code> method of our custom argument resolver.</p>
+
+<pre><code class="php">interface RequestDTOInterface
+{
+    public function __construct(Request $request);
+}
+</code></pre>
+
+<p>All request DTO's should implement this interface to make the things work properly. Therefore <code>supports()</code> method of <code>RequestDTOResolver</code> will look like this</p>
+
+<pre><code class="php">// ...
+
+class RequestDTOResolver implements ArgumentValueResolverInterface
+{
+    // ...
+
+    public function supports(Request $request, ArgumentMetadata $argument)
+    {
+        $reflection = new \ReflectionClass($argument-&gt;getType());
+        if ($reflection-&gt;implementsInterface(RequestDTOInterface::class)) {
+            return true;
+        }
+
+        return false;
+    }
+
+    // ...
+}
+</code></pre>
+
+<p>Final step to make argument resolver work, is to register it as a tagged service in <code>config/services.yaml</code>.</p>
+
+<pre><code class="yaml"># ...
+services:
+    App\Http\RequestDTOResolver:
+        arguments:
+            - '@validator'
+        tags:
+            - { name: controller.request_value_resolver, priority: 50 }
+# ...
+</code></pre>
+
+<p>And... we are done!</p>
+
+<h2 id="request-dto-implementation-example">Request DTO Implementation Example</h2>
+
+<p>Let's implement <code>UpdateEmailRequest</code> mentioned in the beginning of this post. This implementation is fairly simple.</p>
+
+<pre><code class="php">// ...
+
+use Symfony\Component\Validator\Constraints as Assert;
+
+class UpdateEmailRequest implements RequestDTOInterface
+{
+    /**
+     * @Assert\NotBlank()
+     * @Assert\Email()
+     */
+    private $email;
+
+    public function __construct(Request $request)
+    {
+        $this-&gt;email = $request-&gt;get('email');
+
+        // or if this is JSON request
+        // $data = json_decode($request-&gt;getContent(), true);
+        // $this-&gt;email = $data['email'] ?? '';
+    }
+
+    public function email(): string
+    {
+        return $this-&gt;email;
+    }
+}
+</code></pre>
+
+<blockquote>
+  <p><strong><em>NOTICE:</em></strong></p>
+  
+  <p><em>Don't forget to import Symfony validation constraints to make validation work.</em></p>
+</blockquote>
+
+<p>As you may notice, we added two constraints for <code>email</code> property. One of them will ensure that <code>email</code> field is not blank, another one will check if e-mail address is valid.</p>
+
+<p>That's it. Now you can use it as shown before.</p>
+
+<pre><code class="php">// ...
+
+class EmailController
+{
+    public function updateEmail(UpdateEmailRequest $request)
+    {
+        $email = $request-&gt;email();
+
+        // here you have to update an e-mail...
+    }
+}
+</code></pre>
+
+<h2 id="conclusion">Conclusion</h2>
+
+<p>This approach simplifies handling requests in controller actions and could be very useful when you're creating an API. Also you can use this approach to ensure that given set of request contracts (interfaces) is implemented in your application. Thanks to Symfony's flexibility this approach could be extended in any reasonable way.</p>
+
+        </div>
+                    <p class="categories">
+            Categories:
+                        <a href="/blog/categories/php">php</a>                        </p>
+                            <p class="tags">
+            Tags:
+                        <a href="/blog/tags/symfony">symfony</a>                        </p>
+            </article>
+
+
+<div id="disqus_thread"></div>
+<script type="text/javascript">
+    /* * * CONFIGURATION VARIABLES: EDIT BEFORE PASTING INTO YOUR WEBPAGE * * */
+    var disqus_shortname = 'kvashnin'; // required: replace example with your forum shortname
+
+
+    
+    
+    
+    
+    /* * * DON'T EDIT BELOW THIS LINE * * */
+    (function () {
+        var dsq = document.createElement('script');
+        dsq.type = 'text/javascript';
+        dsq.async = true;
+        dsq.src = '//' + disqus_shortname + '.disqus.com/embed.js';
+        (document.getElementsByTagName('head')[0] || document.getElementsByTagName('body')[0]).appendChild(dsq);
+    })();
+</script>
+<noscript>Please enable JavaScript to view the
+    <a href="https://disqus.com/?ref_noscript" rel="nofollow">comments powered by Disqus.</a>
+</noscript>
+
+                </div>
+            </div>
+        </div>
+        <footer class="container">
+            &copy; 2017 Serge Kvashnin
+        </footer>
+
+        <script src="//ajax.googleapis.com/ajax/libs/jquery/1.9.1/jquery.min.js"></script>
+        <script>window.jQuery || document.write('<script src="/components/jquery/jquery.min.js"><\/script>')</script>
+        <script src="/components/bootstrap/js/bootstrap.min.js"></script>
+                
+                <script src="/components/highlightjs/highlight.pack.js"></script>
+        <script>hljs.initHighlightingOnLoad();</script>
+
+                    </body>
+</html>

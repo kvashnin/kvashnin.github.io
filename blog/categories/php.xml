@@ -1,0 +1,220 @@
+<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+    <title><![CDATA[Serge Kvashnin]]></title>
+    <link href="/blog/categories/php.xml" rel="self"/>
+    <link href="/"/>
+    <updated>2017-12-28T14:41:26+00:00</updated>
+    <id>/</id>
+        <generator uri="http://sculpin.io/">Sculpin</generator>
+            <entry>
+            <title type="html"><![CDATA[Using Request DTO in Symfony]]></title>
+            <link href="/blog/using-request-dto-in-symfony"/>
+            <updated>2017-12-28T14:41:26+00:00</updated>
+            <id>/blog/using-request-dto-in-symfony</id>
+            <content type="html"><![CDATA[<blockquote>
+  <p><strong>TL;DR</strong></p>
+  
+  <p>Instead of creating form, handling request and checking form validity inside each controller action you can use request data transfer objects with validation constraints.</p>
+  
+  <p><strong><em>NOTICE:</em></strong></p>
+  
+  <p><em>This article is written for Symfony 4.0 and PHP 7.1. Performing some adjustments you can easily make it work in earlier versions of PHP. You can also use <a href="https://symfony.com/doc/3.4/controller/argument_value_resolver.html">Symfony 3.4 documentation</a> to adjust this example.</em></p>
+</blockquote>
+
+<p>Compare these two code snippets from imaginary controller that handles user's e-mail update.</p>
+
+<pre><code class="php">class EmailController
+{
+    public function updateEmail(Request $request)
+    {
+        $form = $this-&gt;createForm(EmailUpdateType::class);
+        $form-&gt;handleRequest($request);
+
+        if ($form-&gt;isSubmitted() &amp;&amp; $form-&gt;isValid()) {
+            // here you have to update an e-mail...
+        }
+
+        // here you have to return response with errors if something went wrong...
+    }
+}
+</code></pre>
+
+<p>vs.</p>
+
+<pre><code class="php">class EmailController
+{
+    public function updateEmail(UpdateEmailRequest $request)
+    {
+        $email = $request-&gt;email();
+
+        // here you have to update an e-mail...
+    }
+}
+</code></pre>
+
+<p>Second snippet is free from unneeded code duplication. Also it's less verbose. You are immediately ready to use valid data. Symfony is pretty flexible and you don't have to use form component for API requests handling, if you don't want to.</p>
+
+<p>Let's see how this can be achieved.</p>
+
+<blockquote>
+  <p><strong><em>NOTICE:</em></strong></p>
+  
+  <p><em>You may still want to use Symfony form component as shown in the first code snippet, in case you're generating the template with form on the backend (old school approach). Then you can take an advantage of Twig helpers that make form rendering much simpler (see <a href="https://symfony.com/doc/current/forms.html#rendering-the-form">Symfony doc's</a>).</em></p>
+</blockquote>
+
+<h2 id="extending-controller-action-argument-resolving">Extending Controller Action Argument Resolving</h2>
+
+<p>Symfony ships with <a href="https://symfony.com/doc/current/controller/argument_value_resolver.html#functionality-shipped-with-the-httpkernel">five value resolvers</a> in the HttpKernel component "out of the box". To achieve our goal we have to add a <a href="https://symfony.com/doc/current/controller/argument_value_resolver.html#adding-a-custom-value-resolver">custom value resolver</a>. It should implement <a href="http://api.symfony.com/4.0/Symfony/Component/HttpKernel/Controller/ArgumentValueResolverInterface.html"><code>ArgumentValueResolverInterface</code></a> with two methods: <code>supports()</code> and <code>resolve()</code>.</p>
+
+<pre><code class="php">// ...
+
+use Symfony\Component\HttpFoundation\Request;
+use Symfony\Component\HttpKernel\Controller\ArgumentValueResolverInterface;
+use Symfony\Component\HttpKernel\ControllerMetadata\ArgumentMetadata;
+use Symfony\Component\HttpKernel\Exception\BadRequestHttpException;
+use Symfony\Component\Validator\Validator\ValidatorInterface;
+
+class RequestDTOResolver implements ArgumentValueResolverInterface
+{
+    private $validator;
+
+    public function __construct(ValidatorInterface $validator)
+    {
+        $this-&gt;validator = $validator;
+    }
+
+    public function supports(Request $request, ArgumentMetadata $argument)
+    {
+        // TODO: Implement
+    }
+
+    public function resolve(Request $request, ArgumentMetadata $argument)
+    {
+        // creating new instance of custom request DTO
+        $class = $argument-&gt;getType();
+        $dto = new $class($request);
+
+        // throw bad request exception in case of invalid request data
+        $errors = $this-&gt;validator-&gt;validate($dto);
+        if (count($errors) &gt; 0) {
+            throw new BadRequestHttpException((string) $errors);
+        }
+
+        yield $dto;
+    }
+}
+</code></pre>
+
+<p>We will implement <code>supports()</code> method a bit later. For now let's take a closer at <code>resolve()</code> method.</p>
+
+<p>It receives the <code>Request</code> object, which is the current request, and an <a href="http://api.symfony.com/4.0/Symfony/Component/HttpKernel/ControllerMetadata/ArgumentMetadata.html"><code>ArgumentMetadata</code></a> object that contains needed information for the current argument.</p>
+
+<p>As you can see, we're using argument class (which should be a request DTO) to create an actual instance, passing the request object to allow DTO to be constructed with needed data (later you will see an example of DTO implementation). If data is invalid we throw bad request exception, otherwise we <a href="http://php.net/manual/en/language.generators.syntax.php">yield</a> this data to the <code>ArgumentResolver</code>.</p>
+
+<p>Now we have to ensure that our DTO resolver will handle DTO request arguments only. Also we want to be confident, that DTO requests have a constructor which receives the request and extracts data from it.</p>
+
+<p>It's time to create an interface for our DTO request classes and to implement <code>supports()</code> method of our custom argument resolver.</p>
+
+<pre><code class="php">interface RequestDTOInterface
+{
+    public function __construct(Request $request);
+}
+</code></pre>
+
+<p>All request DTO's should implement this interface to make the things work properly. Therefore <code>supports()</code> method of <code>RequestDTOResolver</code> will look like this</p>
+
+<pre><code class="php">// ...
+
+class RequestDTOResolver implements ArgumentValueResolverInterface
+{
+    // ...
+
+    public function supports(Request $request, ArgumentMetadata $argument)
+    {
+        $reflection = new \ReflectionClass($argument-&gt;getType());
+        if ($reflection-&gt;implementsInterface(RequestDTOInterface::class)) {
+            return true;
+        }
+
+        return false;
+    }
+
+    // ...
+}
+</code></pre>
+
+<p>Final step to make argument resolver work, is to register it as a tagged service in <code>config/services.yaml</code>.</p>
+
+<pre><code class="yaml"># ...
+services:
+    App\Http\RequestDTOResolver:
+        arguments:
+            - '@validator'
+        tags:
+            - { name: controller.request_value_resolver, priority: 50 }
+# ...
+</code></pre>
+
+<p>And... we are done!</p>
+
+<h2 id="request-dto-implementation-example">Request DTO Implementation Example</h2>
+
+<p>Let's implement <code>UpdateEmailRequest</code> mentioned in the beginning of this post. This implementation is fairly simple.</p>
+
+<pre><code class="php">// ...
+
+use Symfony\Component\Validator\Constraints as Assert;
+
+class UpdateEmailRequest implements RequestDTOInterface
+{
+    /**
+     * @Assert\NotBlank()
+     * @Assert\Email()
+     */
+    private $email;
+
+    public function __construct(Request $request)
+    {
+        $this-&gt;email = $request-&gt;get('email');
+
+        // or if this is JSON request
+        // $data = json_decode($request-&gt;getContent(), true);
+        // $this-&gt;email = $data['email'] ?? '';
+    }
+
+    public function email(): string
+    {
+        return $this-&gt;email;
+    }
+}
+</code></pre>
+
+<blockquote>
+  <p><strong><em>NOTICE:</em></strong></p>
+  
+  <p><em>Don't forget to import Symfony validation constraints to make validation work.</em></p>
+</blockquote>
+
+<p>As you may notice, we added two constraints for <code>email</code> property. One of them will ensure that <code>email</code> field is not blank, another one will check if e-mail address is valid.</p>
+
+<p>That's it. Now you can use it as shown before.</p>
+
+<pre><code class="php">// ...
+
+class EmailController
+{
+    public function updateEmail(UpdateEmailRequest $request)
+    {
+        $email = $request-&gt;email();
+
+        // here you have to update an e-mail...
+    }
+}
+</code></pre>
+
+<h2 id="conclusion">Conclusion</h2>
+
+<p>This approach simplifies handling requests in controller actions and could be very useful when you're creating an API. Also you can use this approach to ensure that given set of request contracts (interfaces) is implemented in your application. Thanks to Symfony's flexibility this approach could be extended in any reasonable way.</p>
+]]></content>
+        </entry>
+    </feed>
